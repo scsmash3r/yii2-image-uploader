@@ -17,11 +17,17 @@
         "issues": "https://github.com/demisang/yii2-image-uploader/issues",
         "source": "https://github.com/demisang/yii2-image-uploader"
     },
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/scsmash3r/yii2-cropper"
+        }
+    ],
     "require": {
         "php": ">=5.4.0",
         "yiisoft/yii2": "*",
         "yurkinx/yii2-image": "dev-master",
-        "demi/cropper": "~1.0"
+        "demi/cropper": "dev-master"
     },
     "autoload": {
         "psr-4": {
