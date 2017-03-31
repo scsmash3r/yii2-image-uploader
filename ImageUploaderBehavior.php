@@ -6,19 +6,16 @@ use Yii;
 use yii\base\Behavior;
 use yii\db\ActiveRecord;
 use yii\helpers\Html;
-use yii\helpers\Url;
 use yii\image\drivers\Image_GD;
 use yii\image\drivers\Image_Imagick;
 use yii\validators\ImageValidator;
 use yii\validators\RequiredValidator;
 use yii\validators\Validator;
-use yii\web\JsExpression;
 use yii\web\UploadedFile;
 
 /**
- * Поведение для работы с главным изображением материала
+ * Поведение для работы с главным изображением материала.
  *
- * @package demi\image
  *
  * @property ActiveRecord $owner
  */
@@ -38,15 +35,19 @@ class ImageUploaderBehavior extends Behavior
     protected $_imageSizes = [];
     /** @var string Имя файла, который будет отображён при условии отсутствия изображения */
     protected $_noImageBaseName = 'noimage.png';
-    /** @var boolean Обязательно ли загружать изображение */
+    /** @var bool Обязательно ли загружать изображение */
     protected $_imageRequire = false;
+    /** @var int Позволить ли загрузку сразу нескольких файлов? (количество) */
+    protected $_uploadMultiple = false;
+    /** @var bool Удалять ли запись из БД вместо того, чтобы просто заменять $_imageAttribute параметр? */
+    protected $_deleteRow = false;
     /** @var array Дополнительные параметры для ImageValidator */
     protected $_imageValidatorParams = [];
     /** @var string Название субдомена backend`а, нужен для того, чтобы выводить абсолютный путь к изображению в backend`е */
     protected $_backendSubdomain = 'admin.';
     /** @var string Временное хранилище для учёта текущего, уже загруженного изображения */
     protected $_oldImage = null;
-    /** @var float|null Соотношение сторон для обрезки изображения, если NULL - свободная область */
+    /** @var array Соотношение сторон для обрезки изображения */
     protected $_aspectRatio = null;
     /** @var array Конфигурационный массив, который переопределяет вышеуказанные настройки */
     public $imageConfig = [];
@@ -75,7 +76,7 @@ class ImageUploaderBehavior extends Behavior
 
         // Применяем конфигурационные опции
         foreach ($this->imageConfig as $key => $value) {
-            $var = '_' . $key;
+            $var = '_'.$key;
             $this->$var = $value;
         }
 
@@ -95,11 +96,13 @@ class ImageUploaderBehavior extends Behavior
         }
 
         // Подключаем валидатор изображения
+
         $validatorParams = array_merge([
             'extensions' => $this->_fileTypes,
             'maxSize' => $this->_maxFileSize,
+            'maxFiles' => $this->_uploadMultiple,
             'skipOnEmpty' => true,
-            'tooBig' => Yii::t('image-upload', 'The image is too large, the maximum size: ') . floor($this->_maxFileSize / 1024 / 1024) . Yii::t('image-upload', 'MB'),
+            'tooBig' => Yii::t('image-upload', 'The image is too large, the maximum size: ').floor($this->_maxFileSize / 1024 / 1024).Yii::t('image-upload', 'MB'),
         ], $this->_imageValidatorParams);
 
         $validator = Validator::createValidator(ImageValidator::className(), $owner, $this->_imageAttribute,
@@ -108,7 +111,7 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Get image config param value
+     * Get image config param value.
      *
      * @param string $paramName
      *
@@ -116,20 +119,20 @@ class ImageUploaderBehavior extends Behavior
      */
     public function getImageConfigParam($paramName)
     {
-        $name = '_' . $paramName;
+        $name = '_'.$paramName;
 
         return $this->$name;
     }
 
     /**
-     * Set new config param value
+     * Set new config param value.
      *
      * @param string $paramName
-     * @param mixed $value
+     * @param mixed  $value
      */
     public function setImageConfigParam($paramName, $value)
     {
-        $name = '_' . $paramName;
+        $name = '_'.$paramName;
 
         $this->$name = $value;
     }
@@ -147,14 +150,17 @@ class ImageUploaderBehavior extends Behavior
     public function beforeSave()
     {
         $owner = $this->owner;
-
         $image = $owner->{$this->_imageAttribute};
         $image = ($image instanceof UploadedFile) ? $image :
             UploadedFile::getInstance($owner, $this->_imageAttribute);
 
         if ($image instanceof UploadedFile) {
             // Если было передано изоборажение - загружаем его, старое удаляем
-            $new_image = static::uploadImage($image);
+                  $new_image = static::uploadImage($image);
+
+                  // Save all the needed sizes by auto-applying crop
+                  $this->autoCropAndResizeImage($new_image);
+
             if (!empty($new_image)) {
                 $this->deleteImage();
                 $owner->{$this->_imageAttribute} = $new_image;
@@ -176,7 +182,8 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Delete image file and set|save model image field to null
+     * Delete image file and set|save model image field to null.
+     * TODO: Make a check for empty directory to remove.
      *
      * @param bool $updateDb need to update image field in DB
      */
@@ -191,11 +198,15 @@ class ImageUploaderBehavior extends Behavior
             $dirName = Yii::getAlias($this->_savePathAlias);
             // Удаляем все ресазы изображения
             foreach ($this->getImageSizes() as $prefix => $size) {
-                $file_name = $dirName . $DS . static::addPrefixToFile($image, $prefix);
-                @unlink($file_name);
+                $file_name = $dirName.$DS.static::addPrefixToFile($image, $prefix);
+                if (file_exists($file_name)) {
+                    unlink($file_name);
+                }
             }
             // Remove original image
-            @unlink($this->getOriginalImagePath());
+            if (file_exists($this->getOriginalImagePath())) {
+                unlink($this->getOriginalImagePath());
+            }
         }
 
         // Обнуляем значение
@@ -203,13 +214,16 @@ class ImageUploaderBehavior extends Behavior
         $this->_oldImage = null;
 
         if ($updateDb) {
-            $owner->update(false, [$this->_imageAttribute]);
+            if ($this->_deleteRow === true) {
+                return $this->_deleteRow;
+            } else {
+                $owner->update(false, [$this->_imageAttribute]);
+            }
         }
-
     }
 
     /**
-     * Get image sizes
+     * Get image sizes.
      *
      * @return array
      */
@@ -223,7 +237,7 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Загружает переданное изображение в нужную директорию
+     * Загружает переданное изображение в нужную директорию.
      *
      * @param UploadedFile $image
      *
@@ -233,13 +247,15 @@ class ImageUploaderBehavior extends Behavior
     {
         $DS = DIRECTORY_SEPARATOR;
         // Max width for uploaded original image
-        $maxWidth = 1500;
+        $sizes = $this->getImageSizes(); /* Get all image sizes to receive the first initial size, that will server as a limit */
+        $maxWidth = (isset($sizes[''])) ? $sizes[''] : 4800;
         $namePart = uniqid();
-        $name = $namePart . '.' . $image->extension; // Имя будущего файла
+        $name = $namePart.'.'.$image->extension; // Имя будущего файла
         $imageFolder = Yii::getAlias($this->_savePathAlias); // Куда загружать изображение
         // Создаём новую рандомную директорию для загрузки в неё изображений
         $rnddir = static::getRandomDir($imageFolder);
-        $fullImagePath = $imageFolder . $DS . $rnddir . $DS . $name; // Полный путь к изображению
+        $fullImagePath = $imageFolder.$DS.$rnddir.$DS.$name; // Полный путь к изображению
+
         if ($image->saveAs($fullImagePath)) {
             // Reduce image if image is very large
             $imageComponent = static::getImageComponent();
@@ -253,51 +269,10 @@ class ImageUploaderBehavior extends Behavior
             }
 
             // Save original file
-            $originalImage = $imageFolder . $DS . $rnddir . $DS . $namePart . '_original.' . $image->extension;
-            @copy($fullImagePath, $originalImage);
-            // Если изображение успешно сохранено - делаем ресайзные копии
-            $sizes = $this->getImageSizes();
-            $imageInfo = getimagesize($fullImagePath);
-            $img_width = $imageInfo[0];
-            $img_height = $imageInfo[1];
+            $originalImage = $imageFolder.$DS.$rnddir.$DS.$namePart.'_original.'.$image->extension;
+            copy($fullImagePath, $originalImage);
 
-            // Crop image if set aspectRatio value
-            if ($this->_aspectRatio) {
-                $isVertical = $img_width < $img_height;
-
-                if (!$isVertical) {
-                    $width = $img_height * $this->_aspectRatio;
-                    $height = $width / $this->_aspectRatio;
-                } else {
-                    $height = $img_width / $this->_aspectRatio;
-                    $width = $height * $this->_aspectRatio;
-                }
-                /* @var $image_c Image_GD|Image_Imagick */
-                $image_c = $imageComponent->load($fullImagePath);
-                $image_c->crop($width, $height);
-                $img_width = $width;
-                $image_c->save($fullImagePath);
-            }
-
-            // Если изображение НЕ шире чем положено - удаляем главный размер из списка для ресайза
-            if ($img_width <= $sizes['']) {
-                unset($sizes['']);
-            }
-
-            // Запускаем ресайз
-            $rez = static::resizeAndSave($imageFolder . $DS . $rnddir, $name, $sizes);
-            // Если ресайз прошёл успешно
-            if ($rez === true) {
-                return $rnddir . '/' . $name;
-            } else {
-                // Если ресайз пошёл неправильно - удалим файлы
-                foreach ($this->getImageSizes() as $size) {
-                    $file_name = $imageFolder . $DS . $rnddir . $DS . static::addPrefixToFile($name, $size);
-                    @unlink($file_name);
-                }
-
-                return null;
-            }
+            return $rnddir.'/'.$name;
         }
 
         return null;
@@ -305,7 +280,7 @@ class ImageUploaderBehavior extends Behavior
 
     /**
      * Подставляет префикс к имени файла
-     * Например addPrefixToFile("dirname/50b3d1ad130d0.png", "normal_") вернёт "dirname/normal_50b3d1ad130d0.png"
+     * Например addPrefixToFile("dirname/50b3d1ad130d0.png", "normal_") вернёт "dirname/normal_50b3d1ad130d0.png".
      *
      * @param string $path   путь к главному изображению
      * @param string $prefix префикс нужного размера
@@ -321,14 +296,14 @@ class ImageUploaderBehavior extends Behavior
         $path = str_replace('\\', '/', $path);
         $dir = explode('/', $path);
         $lastIndex = count($dir) - 1;
-        $dir[$lastIndex] = $prefix . $dir[$lastIndex];
+        $dir[$lastIndex] = $prefix.$dir[$lastIndex];
 
         return implode('/', $dir);
     }
 
     /**
      * Подставляет постфикс к имени файла
-     * Например addPrefixToFile("dirname/50b3d1ad130d0.png", "_normal") вернёт "dirname/50b3d1ad130d0_normal.png"
+     * Например addPrefixToFile("dirname/50b3d1ad130d0.png", "_normal") вернёт "dirname/50b3d1ad130d0_normal.png".
      *
      * @param string $path    путь к главному изображению
      * @param string $postfix постфикс нужного размера
@@ -344,7 +319,7 @@ class ImageUploaderBehavior extends Behavior
         $parts = explode('.', $path);
 
         if (count($parts) === 1) {
-            return $postfix . $path;
+            return $postfix.$path;
         }
 
         $parts[count($parts) - 2] .= $postfix;
@@ -353,50 +328,54 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Возвращает путь к картинке этой модели указанного размера
+     * Возвращает путь к картинке этой модели указанного размера.
      *
      * @param string $size Префикс размера нужного изображения
      *
      * @return string путь к изображению, пригодный для Html::image()
      */
-    public function getImageSrc($size = null)
+    public function getImageSrc($size = '')
     {
         $owner = $this->owner;
 
         $prefix = '';
         if (Yii::$app->request instanceof \yii\web\Request) {
-            $prefix = Yii::$app->request->baseUrl;
+            $prefix = '/frontend/web/images';
             $host = Yii::$app->request->hostInfo;
             // Если мы сейчас находимся на субдомене admin.*, то вернём абсолютный путь к картинке на frontend
             if (!empty($this->_backendSubdomain) && strpos($host, $this->_backendSubdomain)) {
-                $prefix = str_replace($this->_backendSubdomain, '', $host) . $prefix;
+                $prefix = str_replace($this->_backendSubdomain, '', $host).$prefix;
             }
         }
 
         $image = $owner->{$this->_imageAttribute};
+        $pics = $owner->findOne([
+          'id' => $owner->getPrimaryKey(),
+        ]);
+
         if (empty($image)) {
             if (isset($this->getImageSizes()[$size])) {
-                return $prefix . '/images/' . static::addPrefixToFile($this->_noImageBaseName, $size);
+                return $prefix.'/images/'.static::addPrefixToFile($this->_noImageBaseName, $size);
             }
 
-            return $prefix . '/images/' . $this->_noImageBaseName;
+            return $prefix.'/images/'.$this->_noImageBaseName;
         }
 
         $root = Yii::getAlias($this->_rootPathAlias); // Корень сайта
         $path = Yii::getAlias($this->_savePathAlias); // Получаем путь до папки с загрузками
         $path = str_replace($root, '', $path); // Убиаем из полного пути часть webroot
         $path = str_replace('\\', '/', $path); // Заменяем "\" на "/"
-        $folder = $prefix . '/' . trim($path, '/') . '/';
+        $folder = $prefix.'/'.trim($path, '/').'/';
 
         if (!empty($size)) {
-            return $folder . static::addPrefixToFile($image, $size);
+            return $folder.static::addPrefixToFile($image, $size);
         } else {
-            return $folder . $image;
+            return $folder.static::addPostfixToFile($image, '_original');
         }
     }
 
     /**
-     * Создаём новую директорию в указаном пути, если она не была создана ранее
+     * Создаём новую директорию в указаном пути, если она не была создана ранее.
      *
      * @param string $path путь, где должна быть создана новая директория
      *
@@ -408,20 +387,20 @@ class ImageUploaderBehavior extends Behavior
         $max_scatter = 9; // Диапазон имён директорий 0..$max_scatter
         $levels = 3; // Уровень вложенности директорий
         $dirs = [];
-        for ($i = 1; $i <= $levels; $i++) {
-            $dirs[] = (string)rand(0, $max_scatter);
+        for ($i = 1; $i <= $levels; ++$i) {
+            $dirs[] = (string) rand(0, $max_scatter);
         }
         $dir_path = implode($DS, $dirs);
-        $full_path = rtrim($path, '/\\') . $DS . $dir_path;
+        $full_path = rtrim($path, '/\\').$DS.$dir_path;
 
         if (!is_dir($full_path)) {
             if (YII_DEBUG) {
                 mkdir($full_path, 0777, true);
             } else {
-                shell_exec('mkdir -m 0777 -p ' . $full_path);
+                shell_exec('mkdir -m 0777 -p '.$full_path);
             }
             if (!YII_DEBUG && isset($dirs[0])) {
-                shell_exec('chmod -R 0777 ' . $path . $DS . $dirs[0] . $DS . '*');
+                shell_exec('chmod -R 0777 '.$path.$DS.$dirs[0].$DS.'*');
             }
         }
 
@@ -431,18 +410,19 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Ресайзим изображение
+     * Ресайзим изображение.
      *
-     * @param string $dir        директория, где находятся изображения данной модели
-     * @param string $fileName   имя файла в директории, где находятся изображения данной модели
-     * @param mixed $resizeWidth integer(ширина): будет один ресайз с перезаписью файла.<br />
-     *                           array: будет ресайз для каждого элемента массива.<br />
-     *                           формат массива таков:
-     *                           <pre>
-     *                           array('prefix1'=>sizeWidth1, 'prefix2'=>sizeWidth2)
-     *                           </pre>
+     * @param string $dir         директория, где находятся изображения данной модели
+     * @param string $fileName    имя файла в директории, где находятся изображения данной модели
+     * @param mixed  $resizeWidth integer(ширина): будет один ресайз с перезаписью файла.<br />
+     *                            array: будет ресайз для каждого элемента массива.<br />
+     *                            формат массива таков:
+     *                            <pre>
+     *                            array('prefix1'=>sizeWidth1, 'prefix2'=>sizeWidth2)
+     *                            </pre>
      *
-     * @return boolean В случае успеха TRUE, иначе FALSE
+     * @return bool В случае успеха TRUE, иначе FALSE
+     *
      * @todo Обрезка максимальной высоты вместо ошибки
      */
     public static function resizeAndSave($dir, $fileName, $resizeWidth)
@@ -450,35 +430,45 @@ class ImageUploaderBehavior extends Behavior
         $DS = DIRECTORY_SEPARATOR;
 
         // Полный путь к оригинальному изображению
-        $fullPath = $dir . $DS . $fileName;
+        $fullPath = $dir.$DS.$fileName;
 
-        if (!@file_exists($fullPath)) {
-            // Если оригинального файла не существует - нет смысла продолжать
+        if (!file_exists($fullPath)) {
             return false;
         }
 
-        try {
-            $imageComponent = static::getImageComponent();
-            $image_r = $imageComponent->load($fullPath);
+        if (isset($resizeWidth[''])) {
+            unset($resizeWidth['']);
+        }
+
+        $imageComponent = static::getImageComponent();
+        $image_r = $imageComponent->load($fullPath);
+
             /* @var $image_r Image_GD|Image_Imagick */
             if (is_array($resizeWidth)) {
                 foreach ($resizeWidth as $prefix => $width) {
-                    $image_r->resize($width, static::getMaxHeight($width));
-                    $image_r->save($dir . $DS . $prefix . $fileName);
+                    $c = explode('x', $prefix);
+
+                    $c_width = preg_replace("/\D/", '', $c[0]);
+                    $c_height = preg_replace("/\D/", '', $c[1]);
+
+                    $r_height = static::getMaxHeight($width);
+                    if ($c_width < $c_height) {
+                        $r_height = $c_height;
+                    }
+
+                    $image_r->resize($width, $c_height);
+                    $image_r->save($dir.$DS.$prefix.$fileName);
                 }
             } else {
                 $image_r->resize($resizeWidth, static::getMaxHeight($resizeWidth));
                 $image_r->save($fullPath);
             }
-        } catch (\Exception $e) {
-            return false;
-        }
 
         return true;
     }
 
     /**
-     * Get image component
+     * Get image component.
      *
      * @return \yii\image\ImageDriver
      */
@@ -499,11 +489,11 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Возвращает максимальную высоту изображения относительно переданной ширины
+     * Возвращает максимальную высоту изображения относительно переданной ширины.
      *
-     * @param integer $width
+     * @param int $width
      *
-     * @return integer
+     * @return int
      */
     public static function getMaxHeight($width)
     {
@@ -511,30 +501,37 @@ class ImageUploaderBehavior extends Behavior
     }
 
     /**
-     * Return instance of current behavior
+     * Return instance of current behavior.
      *
      * @return self $this
      */
-    public function geImageBehavior()
+    public function getImageBehavior()
     {
         return $this;
     }
 
     /**
-     * Return server path to original image src
+     * Return server path to original image src.
+     *
+     * @param string $imageSrc
      *
      * @return string
      */
-    protected function getOriginalImagePath()
+    protected function getOriginalImagePath($imageSrc = '')
     {
         $savePath = Yii::getAlias($this->_savePathAlias);
-        $image = $this->_oldImage;
 
-        return static::addPostfixToFile($savePath . DIRECTORY_SEPARATOR . $image, '_original');
+        if (!$imageSrc) {
+            $image = $this->_oldImage;
+        } else {
+            $image = $imageSrc;
+        }
+
+        return static::addPostfixToFile($savePath.DIRECTORY_SEPARATOR.$image, '_original');
     }
 
     /**
-     * Crop original image and resave resized images
+     * Crop original image and resave resized images.
      *
      * @param int $x
      * @param int $y
@@ -544,29 +541,111 @@ class ImageUploaderBehavior extends Behavior
      *
      * @return bool
      */
-    public function cropImage($x, $y, $width, $height, $rotate)
+    public function cropImage($x = 0, $y = 0, $width = 100, $height = 100, $rotate = 0)
     {
         $DS = DIRECTORY_SEPARATOR;
         $savePath = Yii::getAlias($this->_savePathAlias);
         $imageSrc = $this->owner->{$this->_imageAttribute};
-        $fullImagePath = $savePath . $DS . $imageSrc;
+        $fullImagePath = $savePath.$DS.$imageSrc;
 
         $imageComponent = static::getImageComponent();
+
         /* @var $image Image_GD|Image_Imagick */
         $image = $imageComponent->load($this->getOriginalImagePath());
 
         $image->crop($width, $height, $x, $y);
-        $image->rotate($rotate);
+
+        if ($rotate) {
+            $image->rotate($rotate);
+        }
 
         $image->save($fullImagePath);
 
-        $sizes = $this->getImageSizes();
-        unset($sizes['']);
+        $initial_sizes = $this->getImageSizes();
+
+        if (isset($initial_sizes[''])) {
+            unset($initial_sizes['']);
+        }
+
+        if (isset($this->_aspectRatio)) {
+            /* For each aspect ratio */
+            foreach ($this->_aspectRatio as $aspectratio) {
+                /* We are getting each size and check if it goes with current cropper aspect ratio instance */
+                foreach ($initial_sizes as $prefix => $size) {
+                    $c = explode('x', $prefix);
+                    $c_width = preg_replace("/\D/", '', $c[0]);
+                    $c_height = preg_replace("/\D/", '', $c[1]);
+
+                    if (is_float($aspectratio)) {
+                        $aspectratio = round($aspectratio, 1);
+                        $wh = round($c_width / $c_height, 1);
+                        $wh_orig = round($width / $height, 1);
+                    } else {
+                        $wh = $c_width / $c_height;
+                        $wh_orig = $width / $height;
+                    }
+
+                    if ($aspectratio == $wh && $aspectratio == $wh_orig) {
+                        $c_prefix = $c_width.'x'.$c_height.'_';
+                        $sizes[$c_prefix] = $size;
+                    }
+                }
+            }
+        }
 
         $pathParts = explode('/', str_replace('\\', '/', $imageSrc));
         $filename = array_pop($pathParts);
 
         // Запускаем ресайз
-        return static::resizeAndSave($savePath . $DS . implode($DS, $pathParts), $filename, $sizes);
+        return static::resizeAndSave($savePath.$DS.implode($DS, $pathParts), $filename, $sizes);
+    }
+
+    /**
+     * Crop original image automatically after image upload.
+     *
+     * @param string $imageSrc Path to original image
+     *
+     * @return bool
+     */
+    public function autoCropAndResizeImage($imageSrc)
+    {
+        $imageComponent = static::getImageComponent();
+        $DS = DIRECTORY_SEPARATOR;
+        $savePath = Yii::getAlias($this->_savePathAlias);
+
+        $initial_sizes = $this->getImageSizes();
+
+        if (isset($initial_sizes[''])) {
+            unset($initial_sizes['']);
+        }
+
+        if (isset($this->_aspectRatio)) {
+            /* For each aspect ratio */
+            foreach ($this->_aspectRatio as $aspectratio) {
+                $image = $imageComponent->load($this->getOriginalImagePath($imageSrc));
+
+                /* We are getting each size and check if it goes with current cropper aspect ratio instance */
+                foreach ($initial_sizes as $prefix => $size) {
+                    $c = explode('x', $prefix);
+                    $c_width = preg_replace("/\D/", '', $c[0]);
+                    $c_height = preg_replace("/\D/", '', $c[1]);
+
+                    if (is_float($aspectratio)) {
+                        $aspectratio = round($aspectratio, 1);
+                        $wh = round($c_width / $c_height, 1);
+                    } else {
+                        $wh = $c_width / $c_height;
+                    }
+
+                    if ($aspectratio == $wh) {
+                        $c_prefix = $c_width.'x'.$c_height.'_';
+
+                        $image->crop($c_width, $c_height, 0, 0); /* TODO: MAKE CENTERED? */
+                        $image->resize($c_width, $c_height);
+                        $image->save($savePath.$DS.static::addPrefixToFile($imageSrc, $c_prefix));
+                    }
+                }
+            }
+        }
     }
 }

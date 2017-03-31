@@ -12,9 +12,7 @@ use yii\web\NotFoundHttpException;
 use yii\web\Response;
 
 /**
- * Standalone action for delete uploaded image
- *
- * @package demi\image
+ * Standalone action for delete uploaded image.
  */
 class DeleteImageAction extends Action
 {
@@ -30,7 +28,7 @@ class DeleteImageAction extends Action
     public function run()
     {
         /* @var $model ActiveRecord|ImageUploaderBehavior */
-        $model = new $this->modelClass;
+        $model = new $this->modelClass();
 
         $request = Yii::$app->request;
         $pk = $model->getTableSchema()->primaryKey;
@@ -39,7 +37,7 @@ class DeleteImageAction extends Action
         foreach ($pk as $primaryKey) {
             $pkValue = static::_getRequestParam($primaryKey);
             if ($pkValue === null) {
-                throw new InvalidParamException('You must specify "' . $primaryKey . '" param');
+                throw new InvalidParamException('You must specify "'.$primaryKey.'" param');
             }
             $attributes[$primaryKey] = $pkValue;
         }
@@ -56,7 +54,10 @@ class DeleteImageAction extends Action
         }
 
         // Image deletion
-        $model->deleteImage(true);
+        $response = $model->deleteImage(true);
+        if ($response) {
+            $model->delete();
+        }
 
         // if exist custom response function
         if (is_callable($this->afterDelete)) {
@@ -78,9 +79,9 @@ class DeleteImageAction extends Action
     }
 
     /**
-     * Return param by name from $_POST or $_GET. Post priority
+     * Return param by name from $_POST or $_GET. Post priority.
      *
-     * @param string $name
+     * @param string     $name
      * @param mixed|null $defaultValue
      *
      * @return array|mixed|null
@@ -101,4 +102,4 @@ class DeleteImageAction extends Action
 
         return $value;
     }
-} 
+}

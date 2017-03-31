@@ -11,9 +11,7 @@ use yii\web\JsExpression;
 use yii\widgets\InputWidget;
 
 /**
- * Виджет отображения загруженного изображения в форме
- *
- * @package demi\image
+ * Виджет отображения загруженного изображения в форме.
  */
 class FormImageWidget extends InputWidget
 {
@@ -43,37 +41,40 @@ class FormImageWidget extends InputWidget
     {
         /* @var $model ActiveRecord|ImageUploaderBehavior */
         $model = $this->model;
-        /* @var $behavior ImageUploaderBehavior */
-        $behavior = $model->geImageBehavior();
+        /* @var $behavior Im ageUploaderBehavior */
+        $behavior = $model->getImageBehavior();
 
         $wigetId = $this->id;
         $img_hint = '<div class="hint-block">';
-        $img_hint .= Yii::t('image-upload', 'Supported formats:') . ' ' .
-            $behavior->getImageConfigParam('fileTypes') . '<br />';
-        $img_hint .= Yii::t('image-upload', 'Maximum file size:') . ' ' .
-            ceil($behavior->getImageConfigParam('maxFileSize') / 1024 / 1024) . Yii::t('image-upload', 'MB');
+        $img_hint .= Yii::t('image-upload', 'Supported formats:').' '.
+            $behavior->getImageConfigParam('fileTypes').'<br />';
+        $img_hint .= Yii::t('image-upload', 'Maximum file size:').' '.
+            ceil($behavior->getImageConfigParam('maxFileSize') / 1024 / 1024).Yii::t('image-upload', 'MB');
         $img_hint .= '</div><!-- /.hint-block -->';
 
+        /* Single image */
         $imageVal = $model->getAttribute($behavior->getImageConfigParam('imageAttribute'));
+
         if (!$model->isNewRecord && !empty($imageVal)) {
-            $img_hint .= '<div id="' . $wigetId . '" class="row">';
+            $img_hint = '';
+            $img_hint .= '<div id="'.$wigetId.'" class="row">';
             $img_hint .= '<div class="col-md-12">';
             $img_hint .= Html::img($this->imageSrc, ['class' => 'pull-left uploaded-image-preview']);
             // $img_hint .= '<div class="pull-left" style="margin-left: 5px;">';
             $img_hint .= '<div class="btn-group-vertical pull-left"  style="margin-left: 5px;" role="group">';
-            $img_hint .= Html::a('Delete <i class="glyphicon glyphicon-trash"></i>', '#',
+            $img_hint .= Html::a(Yii::t('image-upload', 'Delete photo').' <i class="glyphicon glyphicon-trash"></i>', '#',
                 [
                     'onclick' => new JsExpression('
-                        if (!confirm(" ' . Yii::t('image-upload', 'Are you sure you want to delete the image?') . '")) {
+                        if (!confirm(" ' .Yii::t('image-upload', 'Are you sure you want to delete the image?').'")) {
                             return false;
                         }
 
                         $.ajax({
                             type: "post",
                             cache: false,
-                            url: "' . Url::to($this->deleteUrl) . '",
+                            url: "' .Url::to($this->deleteUrl).'",
                             success: function() {
-                                $("#' . $wigetId . '").remove();
+                                $("#' .$wigetId.', .field-news-img").remove();
                             }
                         });
 
@@ -93,11 +94,14 @@ class FormImageWidget extends InputWidget
                     $pluginOptions['minCropBoxHeight'] = $validatorParams['minHeight'];
                 }
 
-                $img_hint .= Cropper::widget([
+                //Getting all the aspect ratios
+                $aspectRatios = $behavior->getImageConfigParam('aspectRatio');
+                foreach ($aspectRatios as $aspectRatio) {
+                    $img_hint .= Cropper::widget([
                     'modal' => true,
                     'cropUrl' => $this->cropUrl,
-                    'image' => ImageUploaderBehavior::addPostfixToFile($model->getImageSrc(), '_original'),
-                    'aspectRatio' => $behavior->getImageConfigParam('aspectRatio'),
+                    'image' => $model->getImageSrc(),
+                    'aspectRatio' => $aspectRatio,
                     'pluginOptions' => $pluginOptions,
                     'ajaxOptions' => [
                         'success' => new JsExpression(<<<JS
@@ -110,6 +114,7 @@ JS
                         ),
                     ],
                 ]);
+                }
             }
             $img_hint .= '</div><!-- /.btn-group -->';
             $img_hint .= '</div><!-- /.col-md-12 -->';
@@ -117,7 +122,16 @@ JS
         }
 
         $imgAttr = $behavior->getImageConfigParam('imageAttribute');
+        $isMultiple = $behavior->getImageConfigParam('uploadMultiple');
 
-        return Html::activeFileInput($model, $imgAttr) . $img_hint;
+        if (!empty($imageVal)) {
+            return $img_hint;
+        } else {
+            if (!$isMultiple) {
+                return Html::activeFileInput($model, $imgAttr).$img_hint;
+            } else {
+                return Html::activeFileInput($model, $imgAttr.'[]', ['multiple' => true, 'accept' => 'image/*']).$img_hint;
+            }
+        }
     }
-} 
+}
