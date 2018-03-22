@@ -602,6 +602,7 @@ class ImageUploaderBehavior extends Behavior
 
     /**
      * Crop original image automatically after image upload.
+     * TODO: Work with aspectratio for better autocropping: detect $master var and dimensions
      *
      * @param string $imageSrc Path to original image
      *
@@ -640,8 +641,14 @@ class ImageUploaderBehavior extends Behavior
                     if ($aspectratio == $wh) {
                         $c_prefix = $c_width.'x'.$c_height.'_';
 
-                        $image->crop($c_width, $c_height, 0, 0); /* TODO: MAKE CENTERED? */
-                        $image->resize($c_width, $c_height);
+                        $master = yii\image\drivers\Image::INVERSE;
+
+                        $image->resize($c_width, $c_height, $master);
+
+                        $crop_x = ($image->width > $c_width) ? (($image->width-$c_width)/2) : 0;
+                        $crop_y = ($image->height > $c_height) ? (($image->height-$c_height)/2) : 0;
+
+                        $image->crop($c_width, $c_height, $crop_x, $crop_y);
                         $image->save($savePath.$DS.static::addPrefixToFile($imageSrc, $c_prefix));
                     }
                 }
